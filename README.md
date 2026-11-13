@@ -1,27 +1,25 @@
-# WatchSim · 通用 headless Lua 表盘模拟器
+# WatchSim · headless Lua 表盘模拟器
 
-在没有手环硬件的情况下，用**真实的 LVGL 引擎离屏渲染**小米手环 Lua 表盘，
-并通过浏览器控制面板手动注入数据（时间、日期、电量、步数……），即时预览效果。
-整个核心是 headless 的内存渲染，不依赖显示服务器，天然跨平台——任何能跑
-C / Python 的主机（含云主机）都能运行，浏览器即可访问。
+没有手环也能调小米手环的 Lua 表盘：PC 上用真实 LVGL 离屏渲染，
+网页面板手动注入时间、日期、电量这些数据，改完立刻出帧。核心是
+headless 内存渲染，不依赖显示服务，能跑 C 和 Python 的机器（包括
+云主机）都能用，跑起来之后浏览器远程访问。
 
-## 特性
+## 它做了什么
 
-- **真实 LVGL 8.3 离屏渲染**：不是几何近似，而是完整的 LVGL 绘制管线
-  （样式、图层、抗锯齿、图片旋转/缩放、动画），输出 336×480 RGBA 帧。
-  图片支持 LVGL `.bin` 与 **PNG**（内置 lodepng 解码器）。
-- **未改动的表盘直接运行**：`face.lua` 原样加载，只在底层用适配层实现
-  `lvgl` / `dataman` 两个模块，表盘代码无感知。
-- **内置示例表盘**：`examples/AstroFace`（作者原创的 9 Pro 星象表盘），
-  clone 即可渲染，无版权顾虑。
-- **数据注入面板**：`dataman` 桩把面板指令转成与真机一致的 8.8 定点回调，
-  支持哨兵（INT_MAX）、NaN、有符号值等边界数据，用于验证防御逻辑。
-- **亮屏 / AOD 双模式**：复刻真机"AOD 不调度 Lua 动画"、AOD 数据去重等限制。
-- **长驻核心 + Web 面板**：C 进程通过 stdio 行协议通信，aiohttp 提供
-  WebSocket 控制面板，单连接推送 PNG，浏览器零插件。
-- **可重复回归**：一条命令跑通动画、渲染、注入、stdio、WebSocket 全链路。
+- 出图走完整的 LVGL 8.3 绘制管线，样式、图层、抗锯齿、图片旋转缩放、
+  动画都是真的，输出 336×480 RGBA 帧。`.bin` 和 png 资源都能解码。
+- 表盘代码原样运行：`lvgl` / `dataman` 两个模块由适配层模拟，真机入口
+  是 `main.lua` 的表盘加一个 `face.lua` 薄壳桥接就行，`examples/AstroFace`
+  就是这么接进来的。
+- 注入数据按真机的 8.8 定点编码，可以给任意字段塞缺测哨兵（INT_MAX）、
+  NaN、有符号值，专门用来测表盘的防御逻辑。
+- 真机的几个限制也照搬：AOD 不调度 Lua 动画、AOD 数据去重。
+- C 核心 `sim_server` 常驻，走 stdio 行协议；aiohttp 服务把帧编成 PNG
+  从 WebSocket 推给浏览器。
+- 回归测试一条命令，动画、渲染、注入、stdio、WebSocket 五层都覆盖。
 
-## 架构与数据流
+## 架构
 
 ```
  浏览器 (index.html)
@@ -40,104 +38,69 @@ C / Python 的主机（含云主机）都能运行，浏览器即可访问。
    真实 LVGL 8.3 ── 自注册 headless display ── 内存 framebuffer (RGBA)
 ```
 
-## 目录结构
+## 目录
 
 ```
 watchsim/
-├── CMakeLists.txt          构建定义
-├── config/lv_conf.h        headless 专用 LVGL 配置
-├── patches/
-│   └── lvgl-decoder-fullread.patch   LVGL 8.3 真彩文件整图读取修复（见下）
-├── tools/
-│   └── fetch_deps.sh       拉取依赖并打补丁（首次构建前运行一次）
-├── deps/                   第三方依赖（由脚本生成，不入库）
-│   ├── lvgl/               LVGL 8.3.11
-│   └── lua/                Lua 5.3.6 + 自编译 liblua.a
-├── core/                   离屏显示与宿主程序
-│   ├── sim_display.c/.h    内存 framebuffer、headless display、tick/pump
-│   ├── sim_server.c        长驻核心，stdio 行协议
-│   ├── run_face.c          一次性渲染表盘（CLI）
-│   ├── diag_pos.c          几何/旋转诊断
-│   ├── test_headless.c     离屏渲染冒烟
-│   └── test_anim.c         动画推进验证
-├── bridge/
-│   └── sim_bridge.c/.h     Lua ↔ LVGL C 桥（simcore 原生模块）
-├── lua/
-│   ├── mi_lvgl.lua         小米风格 lvgl 封装（Object/Image/Anim/flag/event）
-│   └── mi_dataman.lua      dataman 桩（订阅/注入/哨兵/NaN/AOD 去重）
-├── web/
-│   ├── server.py           aiohttp + WebSocket 服务
-│   ├── sim_client.py       sim_server 的 Python 客户端封装
-│   └── index.html          控制面板前端
-├── examples/
-│   └── AstroFace/          内置示例表盘（作者原创，含入口桥接与说明）
-└── tests/
-    ├── inject_basic.lua    示例注入快照
-    ├── smoke_server.py     stdio 核心冒烟
-    └── run_all_tests.py    全链路回归
+├── CMakeLists.txt
+├── config/lv_conf.h        LVGL headless 配置
+├── patches/                LVGL 解码器补丁（见文末说明）
+├── tools/fetch_deps.sh     拉依赖 + 打补丁
+├── deps/                   脚本生成的第三方依赖，不入库
+├── core/                   离屏显示、宿主程序、诊断工具
+├── bridge/                 Lua ↔ LVGL C 桥
+├── lua/                    mi_lvgl.lua / mi_dataman.lua 适配层
+├── web/                    aiohttp 服务 + 面板前端
+├── examples/AstroFace/     内置示例表盘（作者原创）
+└── tests/                  回归测试
 ```
 
-`deps/` 内容不入库，由 `tools/fetch_deps.sh` 按固定版本拉取并打补丁，
-保证任何机器上都能复现同一份构建输入。
+`deps/` 不入库，`tools/fetch_deps.sh` 按固定版本（LVGL v8.3.11、
+Lua 5.3.6）拉取并打补丁，保证每台机器拿到同一份构建输入。
 
-## 依赖与构建
-
-主机需要 git、gcc、cmake、ninja/make；Python 3.10+ 与 `aiohttp`、`pillow`、
-`numpy`。无需 SDL、无需系统级 LVGL/Lua。
+## 构建
 
 ```bash
-cd watchsim
-
-# 1. 一次性拉取 LVGL 8.3.11 / Lua 5.3.6 并应用解码器补丁
-bash tools/fetch_deps.sh
-
-# 2. Python 依赖（Web 面板与回归测试用）
-python3 -m pip install aiohttp pillow numpy
-
-# 3. 构建
-cmake -S . -B build/cmake -G Ninja    # 或默认 Make
+bash tools/fetch_deps.sh                # 一次即可，含解码器补丁
+python3 -m pip install aiohttp pillow numpy   # Python 3.10+
+cmake -S . -B build/cmake               # 需要 gcc、cmake、make
 cmake --build build/cmake -j
 ```
 
+不需要 SDL，也不需要系统装过 LVGL/Lua。
+
 ## 运行
 
-模拟器需要一个**表盘目录**作为输入：包含入口 `face.lua`（真机入口是
-`main.lua` 的表盘，由目录内的 `face.lua` 桥接到 sim 约定，见示例）。
-仓库自带 `examples/AstroFace`，clone 即可渲染；其他表盘通过环境变量
-`WATCHSIM_FACE`、`web/server.py --face-dir` 或 CLI 传参指定。
-
-### Web 控制面板（推荐）
+表盘目录是唯一输入：里面要有入口 `face.lua`。不带参数时，面板和测试
+都用内置的 `examples/AstroFace`；换自己的表盘用 `WATCHSIM_FACE` 环境变量
+或 `--face-dir`。
 
 ```bash
 python3 web/server.py --host 0.0.0.0 --port 8137
-# 默认渲染内置示例表盘；换表盘：
-#   export WATCHSIM_FACE=/path/to/face_dir  或  --face-dir /path/to/face_dir
 # 浏览器打开 http://<主机>:8137/
 ```
 
-面板提供时间/日期/设备三组滑块与数字输入，切换亮屏/AOD，并可对任意字段
-注入哨兵或 NaN。每次改动后自动出帧。
+面板上有时间/日期/电量/步数的控件，可切亮屏/AOD，任意字段都能注入
+哨兵或 NaN，每次改动自动出帧。
 
-### CLI 一次性渲染
+命令行直接出一帧：
 
 ```bash
-# 内置示例表盘
 ./build/cmake/run_face examples/AstroFace examples/AstroFace/ 0 out.raw tests/inject_basic.lua
-# 其他表盘（亮屏 + 注入；AOD 把 0 换成 1）
-./build/cmake/run_face <face_dir> <face_dir>/ 0 out.raw tests/inject_basic.lua
+# 用法：run_face <face_dir> <face_dir>/ <aod 0/1> <out.raw> [inject.lua]
 ```
 
-### 回归测试
+回归测试：
 
 ```bash
-python3 tests/run_all_tests.py        # 8/8 PASS（默认渲染内置示例表盘）
+python3 tests/run_all_tests.py
 ```
 
 ## stdio 行协议（sim_server）
 
 | 命令 | 说明 |
 |------|------|
-| `MODE <0|1>` | 重新加载表盘并切换亮屏/AOD，随后重放当前数据快照 |
+| `MODE <0|1>` | 重载表盘并切换亮屏/AOD，重放当前数据快照 |
 | `INJECT_INT <key> <int>` | 注入整数（内部按 8.8 编码） |
 | `INJECT <key> <raw>` | 注入原始定点值 |
 | `SENTINEL <key>` / `NAN <key>` | 注入缺测哨兵 / NaN |
@@ -146,30 +109,25 @@ python3 tests/run_all_tests.py        # 8/8 PASS（默认渲染内置示例表�
 | `FRAME` | 回 `FRAME <n>` 头 + 645120 字节 RGBA |
 | `QUIT` | 退出 |
 
-## 保真度边界（客观说明）
+## 和真机的差异
 
-**真实模拟的部分**：LVGL 完整绘制与布局、对象/样式/标志、图片解码与旋转
-缩放、`lv_anim` 动画随 tick 推进、AOD 动画抑制与数据去重、8.8 定点与哨兵/
-有符号编码。
+绘制与布局、对象/样式/标志、图片解码与旋转缩放、`lv_anim` 随 tick
+推进、AOD 动画抑制与数据去重、8.8 定点与哨兵/有符号编码，这些和真机
+一致。有出入的地方：
 
-**为 headless 做的取舍与已知限制**：
+- 数据是手动注入的，`dataman` 是行为等价的桩，不是系统服务。
+- 帧按需渲染（`lv_timer_ready` 强制刷新），不等真机的 30ms 刷新周期；
+  虚拟时钟只在 `TICK` 时推进，和真机不等速。
+- 触摸/设置页交互没在面板上暴露，需要的话用 `DOFILE` 脚本驱动。
+- 表盘用到没实现的 LVGL 特性时，适配层直接报错，不静默跳过。
 
-- 数据由面板手动注入，而非真实传感器；`dataman` 是行为等价的桩，不是系统服务。
-- 帧按需渲染（`lv_timer_ready` 强制刷新），不等待真机的 30 ms 刷新周期；
-  虚拟时钟只在 `TICK` 时推进，wall-clock 与真机不完全等速。
-- 触摸/设置页交互目前未在面板暴露（面板聚焦数据注入）；`DOFILE` 可脚本化
-  间接驱动。
-- 表盘内若用到未实现的 LVGL 特性，会在适配层显式报错而非静默忽略。
+## 一处 LVGL 补丁
 
-### 一处必要的 LVGL 解码器修复
-
-LVGL 8.3 对文件型真彩图默认逐行（每行 1px）读取，而旋转需要完整源图，
-导致 headless 下旋转指针零像素。补丁 `patches/lvgl-decoder-fullread.patch`
-将 `lv_img_decoder.c` 的真彩文件分支改为整图读入内存（与 ALPHA_8BIT 分支
-同法），并在 close 时统一释放整图缓冲。该改动只影响文件读取方式，
-不改变绘制结果。`tools/fetch_deps.sh` 会在拉取 LVGL 后自动应用该补丁。
+LVGL 8.3 对文件型真彩图默认逐行读取（每次 1px），而旋转需要完整源图，
+所以 headless 下旋转图片会渲染出零像素。`patches/lvgl-decoder-fullread.patch`
+把真彩文件分支改成整图读入内存（和 ALPHA_8BIT 分支同法），close 时统一
+释放。只改了读取方式，绘制结果不变。`fetch_deps.sh` 拉完依赖会自动打上。
 
 ## 许可证
 
-[MIT](LICENSE)。`deps/` 下拉取的 LVGL（MIT）与 Lua（MIT）遵循其各自许可证，
-补丁后源码仍属 MIT 范畴。
+MIT，见 [LICENSE](LICENSE)。`deps/` 下的 LVGL、Lua 保持各自的原许可证。

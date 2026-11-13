@@ -3,6 +3,25 @@
 #include "lvgl.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
+#include <unistd.h>
+
+/* Make a path absolute against the cwd (device firmware injects absolute
+ * SCRIPT_PATH; relative face dirs would break image src resolution). */
+static char * abs_path(const char * p)
+{
+    static char buf[PATH_MAX];
+#if _WIN32
+    if (p[0] && p[1] == ':') return (char *)p;      /* already absolute */
+    if (p[0] == '/' || p[0] == '\\') return (char *)p;
+#else
+    if (p[0] == '/') return (char *)p;
+#endif
+    if (!getcwd(buf, sizeof(buf))) return (char *)p;
+    size_t n = strlen(buf);
+    snprintf(buf + n, sizeof(buf) - n, "/%s", p);
+    return buf;
+}
 
 /* Run an unmodified watch face under the real LVGL engine.
  * argv: <face_dir> <script_path> <aod 0/1> <out.raw>
@@ -16,8 +35,8 @@ int main(int argc, char ** argv)
                 argv[0]);
         return 1;
     }
-    const char * face_dir = argv[1];
-    const char * script_path = argv[2];
+    const char * face_dir = abs_path(argv[1]);
+    const char * script_path = abs_path(argv[2]);
     int aod = atoi(argv[3]);
     const char * out_raw = argv[4];
     const char * inject_path = (argc >= 6) ? argv[5] : NULL;

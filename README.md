@@ -9,8 +9,11 @@ C / Python 的主机（含云主机）都能运行，浏览器即可访问。
 
 - **真实 LVGL 8.3 离屏渲染**：不是几何近似，而是完整的 LVGL 绘制管线
   （样式、图层、抗锯齿、图片旋转/缩放、动画），输出 336×480 RGBA 帧。
+  图片支持 LVGL `.bin` 与 **PNG**（内置 lodepng 解码器）。
 - **未改动的表盘直接运行**：`face.lua` 原样加载，只在底层用适配层实现
   `lvgl` / `dataman` 两个模块，表盘代码无感知。
+- **内置示例表盘**：`examples/AstroFace`（作者原创的 9 Pro 星象表盘），
+  clone 即可渲染，无版权顾虑。
 - **数据注入面板**：`dataman` 桩把面板指令转成与真机一致的 8.8 定点回调，
   支持哨兵（INT_MAX）、NaN、有符号值等边界数据，用于验证防御逻辑。
 - **亮屏 / AOD 双模式**：复刻真机"AOD 不调度 Lua 动画"、AOD 数据去重等限制。
@@ -66,6 +69,8 @@ watchsim/
 │   ├── server.py           aiohttp + WebSocket 服务
 │   ├── sim_client.py       sim_server 的 Python 客户端封装
 │   └── index.html          控制面板前端
+├── examples/
+│   └── AstroFace/          内置示例表盘（作者原创，含入口桥接与说明）
 └── tests/
     ├── inject_basic.lua    示例注入快照
     ├── smoke_server.py     stdio 核心冒烟
@@ -96,15 +101,17 @@ cmake --build build/cmake -j
 
 ## 运行
 
-模拟器需要一个**表盘目录**作为输入：包含未改动的 `face.lua`（以及
-`assets/*.bin` 资源）。三种方式指定：环境变量 `WATCHSIM_FACE`、
-`web/server.py --face-dir`、或 CLI 直接传参。
+模拟器需要一个**表盘目录**作为输入：包含入口 `face.lua`（真机入口是
+`main.lua` 的表盘，由目录内的 `face.lua` 桥接到 sim 约定，见示例）。
+仓库自带 `examples/AstroFace`，clone 即可渲染；其他表盘通过环境变量
+`WATCHSIM_FACE`、`web/server.py --face-dir` 或 CLI 传参指定。
 
 ### Web 控制面板（推荐）
 
 ```bash
-export WATCHSIM_FACE=/path/to/face_dir
 python3 web/server.py --host 0.0.0.0 --port 8137
+# 默认渲染内置示例表盘；换表盘：
+#   export WATCHSIM_FACE=/path/to/face_dir  或  --face-dir /path/to/face_dir
 # 浏览器打开 http://<主机>:8137/
 ```
 
@@ -114,17 +121,16 @@ python3 web/server.py --host 0.0.0.0 --port 8137
 ### CLI 一次性渲染
 
 ```bash
-# 亮屏，带数据注入
+# 内置示例表盘
+./build/cmake/run_face examples/AstroFace examples/AstroFace/ 0 out.raw tests/inject_basic.lua
+# 其他表盘（亮屏 + 注入；AOD 把 0 换成 1）
 ./build/cmake/run_face <face_dir> <face_dir>/ 0 out.raw tests/inject_basic.lua
-# AOD 静态帧
-./build/cmake/run_face <face_dir> <face_dir>/ 1 aod.raw
 ```
 
 ### 回归测试
 
 ```bash
-export WATCHSIM_FACE=/path/to/face_dir   # 需要 face.lua + assets/*.bin
-python3 tests/run_all_tests.py        # 8/8 PASS
+python3 tests/run_all_tests.py        # 8/8 PASS（默认渲染内置示例表盘）
 ```
 
 ## stdio 行协议（sim_server）

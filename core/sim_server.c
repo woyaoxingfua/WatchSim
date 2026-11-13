@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <unistd.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 #define FRAME_BYTES (SIM_HOR_RES * SIM_VER_RES * (int)sizeof(sim_rgba_t))
 
@@ -81,6 +87,18 @@ static int call_dataman2(const char * method, const char * key, int has_i, long 
     return 0;
 }
 
+/* Make a path absolute against the cwd (device firmware injects absolute
+ * SCRIPT_PATH; relative face dirs would break image src resolution). */
+static char * abs_path(const char * p)
+{
+    static char buf[PATH_MAX];
+    if (p[0] == '/') return (char *)p;
+    if (!getcwd(buf, sizeof(buf))) return (char *)p;
+    size_t n = strlen(buf);
+    snprintf(buf + n, sizeof(buf) - n, "/%s", p);
+    return buf;
+}
+
 static void emit_frame(void)
 {
     lv_obj_update_layout(lv_scr_act());
@@ -99,12 +117,16 @@ static void emit_frame(void)
 int main(int argc, char ** argv)
 {
     setvbuf(stderr, NULL, _IONBF, 0);
+#ifdef _WIN32
+    /* Binary frames go through stdout; text mode would corrupt them. */
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
     if (argc < 3) {
         fprintf(stderr, "usage: %s <face_dir> <script_path> [aod]\n", argv[0]);
         return 1;
     }
-    snprintf(g_face_dir, sizeof(g_face_dir), "%s", argv[1]);
-    snprintf(g_script_path, sizeof(g_script_path), "%s", argv[2]);
+    snprintf(g_face_dir, sizeof(g_face_dir), "%s", abs_path(argv[1]));
+    snprintf(g_script_path, sizeof(g_script_path), "%s", abs_path(argv[2]));
     int aod = (argc >= 4) ? atoi(argv[3]) : 0;
 
     sim_display_init();

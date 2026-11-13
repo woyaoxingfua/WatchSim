@@ -3,16 +3,22 @@ from PIL import Image
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LUA = os.environ.get("WATCHSIM_FACE", "")
+LUA = os.environ.get("WATCHSIM_FACE") or os.path.join(ROOT, "examples", "AstroFace")
 FRAME = 336 * 480 * 4
 
-if not LUA:
-    sys.exit("Set WATCHSIM_FACE to a watch face directory first, "
-             "e.g.:  export WATCHSIM_FACE=/path/to/face_dir")
 os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
 
+
+def binpath(name):
+    build = os.path.join(ROOT, "build", "cmake")
+    for cand in (name, name + ".exe"):
+        if os.path.exists(os.path.join(build, cand)):
+            return os.path.join(build, cand)
+    return os.path.join(build, name)
+
+
 p = subprocess.Popen(
-    [f"{ROOT}/build/cmake/sim_server", LUA, f"{LUA}/", "0"],
+    [binpath("sim_server"), LUA, LUA + "/", "0"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 def send(line):

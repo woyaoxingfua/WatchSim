@@ -13,8 +13,9 @@ back over the same socket. PNG keeps the on-wire payload small (a raw frame is
 a plain <img> via a Blob URL.
 
 Run:
-    export WATCHSIM_FACE=/path/to/face_dir   # directory holding face.lua
     python3 web/server.py --host 0.0.0.0 --port 8080
+    # optional: export WATCHSIM_FACE=/path/to/face_dir (defaults to the
+    # bundled examples/AstroFace)
 """
 from __future__ import annotations
 
@@ -33,9 +34,22 @@ sys.path.insert(0, HERE)
 
 from sim_client import SimClient  # noqa: E402
 
-# Watch face directory: $WATCHSIM_FACE, overridable with --face-dir.
-DEFAULT_FACE = os.environ.get("WATCHSIM_FACE", "")
-SIM_SERVER = os.path.join(ROOT, "build", "cmake", "sim_server")
+# Watch face directory: bundled example, overridable with $WATCHSIM_FACE
+# or --face-dir.
+DEFAULT_FACE = os.environ.get("WATCHSIM_FACE") or os.path.join(ROOT, "examples", "AstroFace")
+
+
+def _find_sim_server() -> str:
+    """CMake names the binary sim_server(.exe); pick whatever exists."""
+    build = os.path.join(ROOT, "build", "cmake")
+    for cand in ("sim_server", "sim_server.exe"):
+        p = os.path.join(build, cand)
+        if os.path.exists(p):
+            return p
+    return os.path.join(build, "sim_server")
+
+
+SIM_SERVER = _find_sim_server()
 
 # Metadata used to build the panel declaratively on the client.
 CONTROLS = [
@@ -50,6 +64,7 @@ CONTROLS = [
     {
         "group": "日期",
         "fields": [
+            {"key": "dateYear", "label": "年", "min": 2000, "max": 2100},
             {"key": "dateMonth", "label": "月", "min": 1, "max": 12},
             {"key": "dateDay", "label": "日", "min": 1, "max": 31},
             {"key": "dateWeek", "label": "星期(0=日)", "min": 0, "max": 6},
@@ -160,10 +175,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--face-dir", default=DEFAULT_FACE,
                     help="watch face directory (holds face.lua); "
-                         "defaults to $WATCHSIM_FACE")
+                         "defaults to $WATCHSIM_FACE or the bundled example")
     args = ap.parse_args()
-    if not args.face_dir:
-        ap.error("no watch face directory: pass --face-dir or set $WATCHSIM_FACE")
     web.run_app(build_app(args.face_dir), host=args.host, port=args.port,
                 print=lambda *_: None)
 

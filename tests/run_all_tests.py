@@ -9,8 +9,8 @@ Runs every layer of the stack and asserts on real outputs, not just exit codes:
   5. websocket  - the aiohttp panel end-to-end (server started on a free port)
 
 Usage:
-    export WATCHSIM_FACE=/path/to/face_dir   # holds face.lua + assets/*.bin
     python3 tests/run_all_tests.py
+    # optional: export WATCHSIM_FACE=/path/to/other_face_dir
 """
 from __future__ import annotations
 
@@ -26,13 +26,10 @@ from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, "build", "cmake")
-FACE = os.environ.get("WATCHSIM_FACE", "")
-ASSETS = os.path.join(FACE, "assets")
+FACE = os.environ.get("WATCHSIM_FACE") or os.path.join(ROOT, "examples", "AstroFace")
+ASSETS = os.path.join(FACE, "res")
 FRAME = 336 * 480 * 4
 
-if not FACE:
-    sys.exit("Set WATCHSIM_FACE to a watch face directory first, "
-             "e.g.:  export WATCHSIM_FACE=/path/to/face_dir")
 os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
 
 results: list[tuple[str, bool, str]] = []
@@ -41,6 +38,15 @@ results: list[tuple[str, bool, str]] = []
 def check(name: str, ok: bool, detail: str = "") -> None:
     results.append((name, bool(ok), detail))
     print(f"[{'PASS' if ok else 'FAIL'}] {name} {detail}")
+
+
+def binpath(name: str) -> str:
+    """Resolve a built binary name, tolerating CMake's .exe suffix on Windows."""
+    for cand in (name, name + ".exe"):
+        p = os.path.join(BUILD, cand)
+        if os.path.exists(p):
+            return p
+    return os.path.join(BUILD, name)
 
 
 def run(cmd: str, **kw) -> subprocess.CompletedProcess:
@@ -55,13 +61,13 @@ def free_port() -> int:
 
 
 # 1. animation -------------------------------------------------------------
-r = run(f"{BUILD}/test_anim")
+r = run(f'"{binpath("test_anim")}"')
 out = r.stdout
 check("动画推进", "angle=863" in out and "angle=1800" in out,
       "-> 500ms≈900, 1100ms 保持 1800")
 
 # 2. rotation decoder fix --------------------------------------------------
-r = run(f"{BUILD}/diag_pos {ASSETS}/hand1_minute.bin 1918")
+r = run(f'"{binpath("diag_pos")}" "{ASSETS}/w_sunny.png" 1918')
 diag_raw = os.path.join(ROOT, "build", "diag.raw")
 if os.path.exists(diag_raw):
     a = np.fromfile(diag_raw, dtype=np.uint8)
@@ -79,17 +85,18 @@ for tag, aod, inject, expect in [
     ("AOD 静态", 1, "", "aod"),
 ]:
     outp = os.path.join(ROOT, "build", f"reg_{expect}.raw")
-    extra = f" {inject}" if inject else ""
-    r = run(f"{BUILD}/run_face {FACE} {FACE}/ {aod} {outp}{extra}")
+    extra = f' "{inject}"' if inject else ""
+    r = run(f'"{binpath("run_face")}" "{FACE}" "{FACE}/" {aod} "{outp}"{extra}')
     ok = os.path.exists(outp) and os.path.getsize(outp) == FRAME
     check(f"表盘渲染-{tag}", ok, f"-> {os.path.getsize(outp) if ok else '失败'} 字节")
 
-# injected frame must contain the step digits region (lit pixels near y=300)
+# injected frame must visibly differ from the default frame (any face)
+normal = np.fromfile(os.path.join(ROOT, "build", "reg_normal.raw"),
+                     dtype=np.uint8).reshape(480, 336, 4)
 inj = np.fromfile(os.path.join(ROOT, "build", "reg_inj.raw"),
                   dtype=np.uint8).reshape(480, 336, 4)
-step_band = inj[295:330, :, :3]
-check("注入帧含步数区", (step_band.max(axis=2) > 120).sum() > 50,
-      f"-> {int((step_band.max(axis=2) > 120).sum())} 亮像素")
+changed = int((normal != inj).any(axis=-1).sum())
+check("注入帧有变化", changed > 200, f"-> {changed} 像素与默认帧不同")
 
 # 4. sim_server stdio core -------------------------------------------------
 r = run("python3 tests/smoke_server.py", timeout=40)

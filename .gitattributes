@@ -1,0 +1,5 @@
+* text=auto
+
+# Scripts and patches must stay LF, or bash / git apply break on Windows.
+*.sh   text eol=lf
+*.patch text eol=lf

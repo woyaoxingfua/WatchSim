@@ -1,0 +1,9 @@
+# CMake build tree and test/render artifacts (diag.raw, reg_*.raw, *.png ...)
+build/
+
+# Third-party dependencies fetched by tools/fetch_deps.sh
+deps/
+
+# Python
+__pycache__/
+*.pyc

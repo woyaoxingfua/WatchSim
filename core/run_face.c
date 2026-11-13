@@ -1,0 +1,91 @@
+#include "sim_display.h"
+#include "../bridge/sim_bridge.h"
+#include "lvgl.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+/* Run an unmodified watch face under the real LVGL engine.
+ * argv: <face_dir> <script_path> <aod 0/1> <out.raw>
+ *   face_dir    directory holding face.lua / calendar.lua
+ *   script_path value for the global SCRIPT_PATH (ends with '/')
+ */
+int main(int argc, char ** argv)
+{
+    if (argc < 5) {
+        fprintf(stderr, "usage: %s <face_dir> <script_path> <aod> <out.raw> [inject.lua]\n",
+                argv[0]);
+        return 1;
+    }
+    const char * face_dir = argv[1];
+    const char * script_path = argv[2];
+    int aod = atoi(argv[3]);
+    const char * out_raw = argv[4];
+    const char * inject_path = (argc >= 6) ? argv[5] : NULL;
+
+    sim_display_init();
+    lua_State * L = sim_bridge_newstate();
+
+    /* package table */
+    lua_getglobal(L, "package");
+    int pkg = lua_gettop(L);
+
+    /* package.path = face_dir/?.lua (so require("calendar") resolves) */
+    lua_pushfstring(L, "%s/?.lua", face_dir);
+    lua_setfield(L, pkg, "path");
+
+    /* package.loaded table */
+    lua_getfield(L, pkg, "loaded");
+    int loaded = lua_gettop(L);
+
+    /* loaded.simcore = global simcore */
+    lua_getglobal(L, "simcore");
+    lua_setfield(L, loaded, "simcore");
+
+    /* loaded.lvgl = dofile(mi_lvgl.lua) */
+    lua_getglobal(L, "dofile");
+    lua_pushfstring(L, "%s/mi_lvgl.lua", WATCHSIM_LUA_DIR);
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        fprintf(stderr, "mi_lvgl error: %s\n", lua_tostring(L, -1)); return 1;
+    }
+    lua_setfield(L, loaded, "lvgl");
+
+    /* loaded.dataman = dofile(mi_dataman.lua) */
+    lua_getglobal(L, "dofile");
+    lua_pushfstring(L, "%s/mi_dataman.lua", WATCHSIM_LUA_DIR);
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        fprintf(stderr, "mi_dataman error: %s\n", lua_tostring(L, -1)); return 1;
+    }
+    lua_setfield(L, loaded, "dataman");
+
+    /* global SCRIPT_PATH */
+    lua_pushstring(L, script_path);
+    lua_setglobal(L, "SCRIPT_PATH");
+
+    /* run face */
+    char entry[1100];
+    snprintf(entry, sizeof(entry), "%s/face.lua", face_dir);
+    if (sim_bridge_run_face(L, entry, aod) != 0) return 1;
+
+    /* optional data injection before the final layout/render */
+    if (inject_path) {
+        lua_getglobal(L, "dofile");
+        lua_pushstring(L, inject_path);
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            fprintf(stderr, "inject error: %s\n", lua_tostring(L, -1));
+            return 1;
+        }
+    }
+
+    /* force layout so coords and image sizes are resolved before rendering */
+    lv_obj_update_layout(lv_scr_act());
+    sim_render_pump(10);
+    sim_tick(16);
+    sim_render_pump(10);
+
+    if (sim_dump_raw(out_raw) != 0) {
+        fprintf(stderr, "dump failed\n");
+        return 1;
+    }
+    printf("face rendered (aod=%d) -> %s\n", aod, out_raw);
+    return 0;
+}

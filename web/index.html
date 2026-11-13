@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WatchSim · Lua 表盘模拟器</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1d2026;
+    --panel-2: #252932;
+    --line: #31363f;
+    --text: #e6e8ec;
+    --muted: #9aa1ad;
+    --accent: #4f9cf9;
+    --danger: #e06c6c;
+    --ok: #5fbf8f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .conn { font-size: 12px; padding: 3px 9px; border-radius: 20px;
+          background: var(--panel-2); color: var(--muted); }
+  .conn.on { color: var(--ok); }
+  .conn.off { color: var(--danger); }
+  .layout {
+    display: grid; grid-template-columns: minmax(280px, 380px) 1fr;
+    gap: 24px; padding: 24px; max-width: 1100px; margin: 0 auto;
+  }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+  .preview { text-align: center; }
+  .preview .frame-wrap {
+    background: #000; border: 1px solid var(--line); border-radius: 18px;
+    padding: 10px; display: inline-block;
+  }
+  #frame {
+    width: 252px; height: 360px; object-fit: contain;
+    border-radius: 10px; display: block; background: #000;
+  }
+  .modes { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
+  button {
+    appearance: none; border: 1px solid var(--line); background: var(--panel-2);
+    color: var(--text); padding: 8px 16px; border-radius: 9px; cursor: pointer;
+    font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ghost { color: var(--muted); }
+  .group {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .group h2 { font-size: 13px; margin: 0 0 12px; color: var(--muted);
+               font-weight: 600; letter-spacing: .5px; }
+  .field { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label { width: 78px; color: var(--muted); flex: none; }
+  .field input[type=range] { flex: 1; accent-color: var(--accent); }
+  .field input[type=number] {
+    width: 74px; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 7px; padding: 6px 8px;
+  }
+  .field .mini { display: flex; gap: 4px; }
+  .field .mini button { padding: 4px 8px; font-size: 11px; border-radius: 6px; }
+  .status { font-size: 12px; color: var(--muted); min-height: 18px; }
+  .status b { color: var(--ok); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WatchSim · Lua 表盘模拟器</h1>
+  <span id="conn" class="conn off">未连接</span>
+</header>
+<div class="layout">
+  <div class="preview">
+    <div class="frame-wrap"><img id="frame" alt="watchface frame"></div>
+    <div class="modes">
+      <button id="modeNormal" class="active" type="button">亮屏</button>
+      <button id="modeAod" type="button">AOD 息屏</button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+  <div class="controls" id="controls"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var frame = document.getElementById("frame");
+  var conn = document.getElementById("conn");
+  var controlsEl = document.getElementById("controls");
+  var statusEl = document.getElementById("status");
+  var btnNormal = document.getElementById("modeNormal");
+  var btnAod = document.getElementById("modeAod");
+  var ws = null, aod = 0, reconnectTimer = null;
+
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  function el(tag, attrs, parent) {
+    var n = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === "text") n.textContent = attrs[k];
+      else n.setAttribute(k, attrs[k]);
+    });
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+
+  function buildControls(schema) {
+    controlsEl.innerHTML = "";
+    var cur = schema.state || {};
+    schema.controls.forEach(function (grp) {
+      var box = el("div", { "class": "group" }, controlsEl);
+      el("h2", { text: grp.group }, box);
+      grp.fields.forEach(function (f) {
+        var init = (cur[f.key] !== undefined) ? cur[f.key] : f.min;
+        var row = el("div", { "class": "field" }, box);
+        el("label", { text: f.label }, row);
+        var range = el("input", { type: "range", min: f.min, max: f.max,
+                                  value: init }, row);
+        var num = el("input", { type: "number", min: f.min, max: f.max,
+                                value: init }, row);
+        var mini = el("div", { "class": "mini" }, row);
+        var bS = el("button", { type: "button", text: "哨兵" }, mini);
+        var bN = el("button", { type: "button", text: "NaN" }, mini);
+
+        function commit(v) {
+          var x = parseInt(v, 10);
+          if (isNaN(x)) return;
+          x = Math.max(f.min, Math.min(f.max, x));
+          range.value = x; num.value = x;
+          send({ type: "inject", key: f.key, value: x });
+        }
+        range.addEventListener("input", function () { commit(range.value); });
+        num.addEventListener("change", function () { commit(num.value); });
+        bS.addEventListener("click", function () {
+          send({ type: "sentinel", key: f.key });
+        });
+        bN.addEventListener("click", function () {
+          send({ type: "nan", key: f.key });
+        });
+      });
+    });
+  }
+
+  function setMode(m) {
+    aod = m;
+    btnNormal.classList.toggle("active", !m);
+    btnAod.classList.toggle("active", !!m);
+    send({ type: "mode", aod: m });
+  }
+  btnNormal.addEventListener("click", function () { setMode(0); });
+  btnAod.addEventListener("click", function () { setMode(1); });
+
+  function connect() {
+    var url = (location.protocol === "https:" ? "wss://" : "ws://")
+            + location.host + "/ws";
+    ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = function () {
+      conn.textContent = "已连接";
+      conn.classList.add("on"); conn.classList.remove("off");
+    };
+    ws.onmessage = function (ev) {
+      if (typeof ev.data === "string") {
+        var d = JSON.parse(ev.data);
+        if (d.type === "schema") {
+          buildControls(d);
+          if (typeof d.aod === "number") {
+            aod = d.aod;
+            btnNormal.classList.toggle("active", !aod);
+            btnAod.classList.toggle("active", !!aod);
+          }
+        } else if (d.type === "ack") {
+          statusEl.innerHTML = "<b>已更新</b> · " + d.kind
+            + (d.aod ? " · AOD" : " · 亮屏");
+        } else if (d.type === "error") {
+          statusEl.textContent = "错误：" + d.error;
+        }
+      } else if (ev.data instanceof ArrayBuffer) {
+        var blob = new Blob([ev.data], { type: "image/png" });
+        if (frame.src) URL.revokeObjectURL(frame.src);
+        frame.src = URL.createObjectURL(blob);
+      }
+    };
+    ws.onclose = function () {
+      conn.textContent = "已断开，重连中…";
+      conn.classList.remove("on"); conn.classList.add("off");
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 1000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

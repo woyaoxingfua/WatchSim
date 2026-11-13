@@ -1,0 +1,47 @@
+diff --git a/src/draw/lv_img_decoder.c b/src/draw/lv_img_decoder.c
+index 76aff5e..317891e 100644
+--- a/src/draw/lv_img_decoder.c
++++ b/src/draw/lv_img_decoder.c
+@@ -396,7 +396,26 @@ lv_res_t lv_img_decoder_built_in_open(lv_img_decoder_t * decoder, lv_img_decoder
+             return LV_RES_OK;
+         }
+         else {
+-            /*If it's a file it need to be read line by line later*/
++            /*If it's a file, read all to memory.
++             *[watchsim] Upstream opens file images in line-by-line mode
++             *(img_data stays NULL, reads go through the read_line callback),
++             *but image rotation needs the complete source image, so rotated
++             *file images rendered zero pixels headless. Load the whole file
++             *like the ALPHA_8BIT branch above; the drawing result is
++             *unchanged. The buffer is freed in built_in_close().*/
++            uint32_t px_bytes = (lv_img_cf_get_px_size(cf) + 7) >> 3;
++            uint32_t len      = (uint32_t)dsc->header.w * dsc->header.h * px_bytes;
++            uint8_t * fs_buf = lv_mem_alloc(len);
++            if(fs_buf == NULL) return LV_RES_INV;
++
++            lv_img_decoder_built_in_data_t * user_data = dsc->user_data;
++            lv_fs_seek(&user_data->f, 4, LV_FS_SEEK_SET); /*+4 to skip the header*/
++            lv_fs_res_t res = lv_fs_read(&user_data->f, fs_buf, len, NULL);
++            if(res != LV_FS_RES_OK) {
++                lv_mem_free(fs_buf);
++                return LV_RES_INV;
++            }
++            dsc->img_data = fs_buf;
+             return LV_RES_OK;
+         }
+     }
+@@ -517,6 +536,14 @@ void lv_img_decoder_built_in_close(lv_img_decoder_t * decoder, lv_img_decoder_ds
+ {
+     LV_UNUSED(decoder); /*Unused*/
+ 
++    /*[watchsim] File images loaded whole-image on open (RGB565A8/ALPHA_8BIT
++     *upstream, true color by the patch above) keep that buffer in `img_data`;
++     *free it here so repeated decodes don't leak.*/
++    if(dsc->src_type == LV_IMG_SRC_FILE && dsc->img_data) {
++        lv_mem_free((void *)dsc->img_data);
++        dsc->img_data = NULL;
++    }
++
+     lv_img_decoder_built_in_data_t * user_data = dsc->user_data;
+     if(user_data) {
+         if(dsc->src_type == LV_IMG_SRC_FILE) {

@@ -128,20 +128,26 @@
         var range = el("input", { type: "range", min: f.min, max: f.max,
                                   value: init }, row);
         var num = el("input", { type: "number", min: f.min, max: f.max,
+                                step: f.float ? "any" : "1",
                                 value: init }, row);
         var mini = el("div", { "class": "mini" }, row);
-        var bS = el("button", { type: "button", text: "哨兵" }, mini);
-        var bN = el("button", { type: "button", text: "NaN" }, mini);
+        var isSensor = !!f.sensor;
 
         function commit(v) {
-          var x = parseInt(v, 10);
+          var x = f.float ? parseFloat(v) : parseInt(v, 10);
           if (isNaN(x)) return;
           x = Math.max(f.min, Math.min(f.max, x));
           range.value = x; num.value = x;
-          send({ type: "inject", key: f.key, value: x });
+          send({ type: isSensor ? "sensor" : "inject",
+                 key: f.key, value: x });
         }
         range.addEventListener("input", function () { commit(range.value); });
         num.addEventListener("change", function () { commit(num.value); });
+
+        if (isSensor) return;   /* sensors have no sentinel/NaN semantics */
+
+        var bS = el("button", { type: "button", text: "哨兵" }, mini);
+        var bN = el("button", { type: "button", text: "NaN" }, mini);
         bS.addEventListener("click", function () {
           send({ type: "sentinel", key: f.key });
         });

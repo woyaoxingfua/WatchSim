@@ -146,6 +146,52 @@ finally:
     except subprocess.TimeoutExpired:
         srv.kill()
 
+# 6. uorb sensor injection (compass face, optional) ------------------------
+# The compass face is not part of the repo (copyright); point
+# WATCHSIM_COMPASS_FACE at a local checkout to include this check.
+COMPASS = os.environ.get(
+    "WATCHSIM_COMPASS_FACE",
+    "/mnt/c/Users/Lenovo/WorkBuddy/2026-09-01-13-44-07/compass_9pro_10p/app/lua")
+if not os.path.isdir(COMPASS):
+    print("[SKIP] uorb 传感器 -> compass 表盘目录不存在")
+else:
+    proc = subprocess.Popen(
+        [binpath("sim_server"), COMPASS, COMPASS + "/", "0"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE)
+
+    def ssend(line: str) -> None:
+        proc.stdin.write((line + "\n").encode())
+        proc.stdin.flush()
+
+    def sreadline() -> str:
+        return proc.stdout.readline().decode().strip()
+
+    def sframe() -> np.ndarray:
+        ssend("FRAME")
+        head = sreadline()
+        n = int(head.split()[1])
+        return np.frombuffer(proc.stdout.read(n), dtype=np.uint8).reshape(480, 336, 4)
+
+    try:
+        sreadline()  # READY
+        ssend("SENSOR compass y 45.0"); sreadline()
+        fa = sframe()
+        ssend("SENSOR compass y 200.0"); sreadline()
+        fb = sframe()
+        # needle disc is centred at (167,316) r~120: compare that region
+        reg_a = fa[196:436, 47:287]
+        reg_b = fb[196:436, 47:287]
+        diff = int((reg_a != reg_b).any(axis=-1).sum())
+        check("uorb 传感器注入", diff > 500,
+              f"-> 指针区域 {diff} 像素随航向变化")
+    finally:
+        proc.stdin.write(b"QUIT\n"); proc.stdin.flush()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
 # summary ------------------------------------------------------------------
 passed = sum(1 for _, ok, _ in results if ok)
 total = len(results)

@@ -12,9 +12,20 @@
 /* ------------------------------------------------------------------ */
 /* Object wrapper                                                      */
 /* ------------------------------------------------------------------ */
+/* widgets.Pointer value->angle mapping, in LVGL 0.1-degree units:
+ * angle = (value - value_start) * angle_range / value_range + angle_start */
+typedef struct {
+    int32_t angle_start;
+    int32_t angle_range;
+    int32_t value_start;
+    int32_t value_range;
+} ptr_range_t;
+
 typedef struct {
     lv_obj_t * obj;
     int event_fn_ref;   /* registry ref for onevent callback */
+    int is_pointer;     /* widgets.Pointer: has range mapping + pivot */
+    ptr_range_t range;  /* defaults: 0..3600 over 0..360 */
 } sim_obj_t;
 
 typedef struct {
@@ -55,6 +66,41 @@ static lv_obj_t * parent_from_arg(lua_State * L, int idx)
 static int32_t prop_int(lua_State * L, int idx)
 {
     return (int32_t)luaL_checknumber(L, idx);
+}
+
+/* Colour property: either an integer (0xRRGGBB) or a '#rrggbb' string,
+ * the way on-device faces spell text_color. */
+static uint32_t prop_color(lua_State * L, int idx)
+{
+    if (lua_isstring(L, idx)) {
+        const char * s = lua_tostring(L, idx);
+        if (s[0] == '#') s++;
+        return (uint32_t)strtoul(s, NULL, 16);
+    }
+    return (uint32_t)luaL_checknumber(L, idx);
+}
+
+/* Pointer value->angle (0.1-degree units), via the object's range mapping. */
+static int32_t ptr_angle(const sim_obj_t * so, lua_Number v)
+{
+    const ptr_range_t * r = &so->range;
+    if (r->value_range == 0) return (int32_t)r->angle_start;
+    lua_Number a = (v - (lua_Number)r->value_start) * (lua_Number)r->angle_range
+                   / (lua_Number)r->value_range + (lua_Number)r->angle_start;
+    return (int32_t)a;
+}
+
+/* Set a range table {angleStart=, angleRange=, valueStart=, valueRange=} on a
+ * pointer object. Table stays on the stack at `tab`; keys are optional and
+ * default to the current values. */
+static void apply_ptr_range(lua_State * L, sim_obj_t * so, int tab)
+{
+    ptr_range_t r = so->range;
+    lua_getfield(L, tab, "angleStart");  if (!lua_isnil(L, -1)) r.angle_start = prop_int(L, -1);  lua_pop(L, 1);
+    lua_getfield(L, tab, "angleRange");  if (!lua_isnil(L, -1)) r.angle_range = prop_int(L, -1);  lua_pop(L, 1);
+    lua_getfield(L, tab, "valueStart");  if (!lua_isnil(L, -1)) r.value_start = prop_int(L, -1);  lua_pop(L, 1);
+    lua_getfield(L, tab, "valueRange");  if (!lua_isnil(L, -1)) r.value_range = prop_int(L, -1);  lua_pop(L, 1);
+    so->range = r;
 }
 
 /* Apply a Lua table of Mi-style properties onto an LVGL object.
@@ -107,6 +153,50 @@ static void apply_props(lua_State * L, sim_obj_t * so, int tab)
             lv_img_set_angle(o, (int16_t)prop_int(L, -1));
         } else if (!strcmp(key, "align")) {
             lv_obj_set_align(o, (lv_align_t)prop_int(L, -1));
+        } else if (!strcmp(key, "pivot")) {
+            /* {x=,y=} in image-local coordinates; LVGL default is the centre. */
+            if (lua_istable(L, -1) && so->is_pointer) {
+                int tab = lua_gettop(L);
+                lua_getfield(L, tab, "x");
+                lv_coord_t px = (lv_coord_t)prop_int(L, -1);
+                lua_pop(L, 1);
+                lua_getfield(L, tab, "y");
+                lv_coord_t py = (lv_coord_t)prop_int(L, -1);
+                lua_pop(L, 1);
+                lv_img_set_pivot(o, px, py);
+            }
+        } else if (!strcmp(key, "range")) {
+            if (lua_istable(L, -1) && so->is_pointer) {
+                apply_ptr_range(L, so, lua_gettop(L));
+            }
+        } else if (!strcmp(key, "value")) {
+            if (so->is_pointer) {
+                lv_img_set_angle(o, (int16_t)ptr_angle(so, luaL_checknumber(L, -1)));
+            }
+        } else if (!strcmp(key, "text")) {
+            lv_label_set_text(o, lua_tostring(L, -1));
+        } else if (!strcmp(key, "text_color")) {
+            lv_obj_set_style_text_color(o, lv_color_hex(prop_color(L, -1)), 0);
+        } else if (!strcmp(key, "text_font")) {
+            /* font userdata from simcore.font(name, size) */
+            const lv_font_t ** f = (const lv_font_t **)
+                luaL_checkudata(L, -1, "sim_font");
+            lv_obj_set_style_text_font(o, *f, 0);
+        } else if (!strcmp(key, "text_align")) {
+            /* Faces pass an lv_align_t (9 values); text align only has
+             * left/center/right — centre anything that isn't left(-ish). */
+            int a = prop_int(L, -1);
+            lv_text_align_t ta = LV_TEXT_ALIGN_CENTER;
+            if (a == LV_ALIGN_TOP_LEFT || a == LV_ALIGN_LEFT_MID
+                || a == LV_ALIGN_BOTTOM_LEFT) {
+                ta = LV_TEXT_ALIGN_LEFT;
+            } else if (a == LV_ALIGN_TOP_RIGHT || a == LV_ALIGN_RIGHT_MID
+                       || a == LV_ALIGN_BOTTOM_RIGHT) {
+                ta = LV_TEXT_ALIGN_RIGHT;
+            }
+            lv_obj_set_style_text_align(o, ta, 0);
+        } else if (!strcmp(key, "width")) {
+            lv_obj_set_width(o, prop_int(L, -1));
         }
         lua_pop(L, 1);
     }
@@ -115,11 +205,23 @@ static void apply_props(lua_State * L, sim_obj_t * so, int tab)
 /* ------------------------------------------------------------------ */
 /* Constructors                                                        */
 /* ------------------------------------------------------------------ */
-static sim_obj_t * push_new_obj(lua_State * L, lv_obj_t * parent, int image)
+/* kind: 0 = plain object, 1 = image, 2 = widgets.Pointer (image + mapping),
+ * 3 = label */
+static sim_obj_t * push_new_obj(lua_State * L, lv_obj_t * parent, int kind)
 {
     sim_obj_t * so = (sim_obj_t *)lua_newuserdata(L, sizeof(sim_obj_t));
-    so->obj = image ? lv_img_create(parent) : lv_obj_create(parent);
+    switch (kind) {
+    case 1: case 2: so->obj = lv_img_create(parent);  break;
+    case 3:         so->obj = lv_label_create(parent); break;
+    default:        so->obj = lv_obj_create(parent);  break;
+    }
     so->event_fn_ref = LUA_NOREF;
+    so->is_pointer   = (kind == 2);
+    /* on-device Pointer defaults: 0..360 mapped onto a full turn */
+    so->range.angle_start = 0;
+    so->range.angle_range = 3600;
+    so->range.value_start = 0;
+    so->range.value_range = 360;
     luaL_getmetatable(L, OBJ_MT);
     lua_setmetatable(L, -2);
     return so;
@@ -140,6 +242,50 @@ static int l_image(lua_State * L)
     lv_obj_t * parent = parent_from_arg(L, 1);
     sim_obj_t * so = push_new_obj(L, parent, 1);
     if (lua_istable(L, 2)) apply_props(L, so, 2);
+    return 1;
+}
+
+/* simcore.pointer(parent, props) — widgets.Pointer backing */
+static int l_pointer(lua_State * L)
+{
+    lv_obj_t * parent = parent_from_arg(L, 1);
+    sim_obj_t * so = push_new_obj(L, parent, 2);
+    if (lua_istable(L, 2)) apply_props(L, so, 2);
+    return 1;
+}
+
+/* simcore.label(parent, props) */
+static int l_label(lua_State * L)
+{
+    lv_obj_t * parent = parent_from_arg(L, 1);
+    sim_obj_t * so = push_new_obj(L, parent, 3);
+    if (lua_istable(L, 2)) apply_props(L, so, 2);
+    return 1;
+}
+
+/* simcore.font(name, size) -> font userdata. The device serves vendor fonts
+ * (e.g. MiSans); the sim maps the size onto the closest built-in montserrat
+ * and warns once about the substitution. */
+static int l_font(lua_State * L)
+{
+    const char * name = luaL_optstring(L, 1, "MiSans-Regular");
+    int size = (int)luaL_optnumber(L, 2, 14);
+
+    const lv_font_t * f;
+    if      (size <= 12) f = &lv_font_montserrat_12;
+    else if (size <= 14) f = &lv_font_montserrat_14;
+    else if (size <= 16) f = &lv_font_montserrat_16;
+    else if (size <= 20) f = &lv_font_montserrat_20;
+    else if (size <= 28) f = &lv_font_montserrat_28;
+    else                 f = &lv_font_montserrat_48;
+    fprintf(stderr, "[watchsim] font '%s' %d -> built-in montserrat\n",
+            name, size);
+
+    const lv_font_t ** fp = (const lv_font_t **)
+        lua_newuserdata(L, sizeof(const lv_font_t *));
+    *fp = f;
+    luaL_getmetatable(L, "sim_font");
+    lua_setmetatable(L, -2);
     return 1;
 }
 
@@ -378,6 +524,8 @@ static const luaL_Reg obj_methods[] = {
     {"Anim", m_anim},
     {"delete", m_delete},
     {"Image", l_image},
+    {"Pointer", l_pointer},
+    {"Label", l_label},
     {NULL, NULL},
 };
 
@@ -413,6 +561,9 @@ static int l_tick_get(lua_State * L)
 static const luaL_Reg simcore_funcs[] = {
     {"object", l_object},
     {"image", l_image},
+    {"pointer", l_pointer},
+    {"label", l_label},
+    {"font", l_font},
     {"timer", l_timer},
     {"set_mode", l_set_mode},
     {"is_aod", l_is_aod},
@@ -478,6 +629,10 @@ lua_State * sim_bridge_newstate(void)
     lua_setfield(L, -2, "__gc");
     lua_pop(L, 1);
 
+    /* font metatable (no methods; userdata just carries the lv_font_t*) */
+    luaL_newmetatable(L, "sim_font");
+    lua_pop(L, 1);
+
     /* simcore module */
     lua_newtable(L);
     luaL_setfuncs(L, simcore_funcs, 0);
@@ -487,6 +642,16 @@ lua_State * sim_bridge_newstate(void)
     lua_pushinteger(L, SIM_VER_RES);
     lua_setfield(L, -2, "VER_RES");
     lua_setglobal(L, "simcore");
+
+    /* widgets namespace in the registry. Faces fetch it through
+     * debug.getregistry()["widgets"].__index — a *field* named __index
+     * holding the constructors (Pointer here), not a metatable. */
+    lua_newtable(L);                          /* widgets namespace table */
+    lua_newtable(L);                          /* the __index field */
+    lua_pushcfunction(L, l_pointer);
+    lua_setfield(L, -2, "Pointer");
+    lua_setfield(L, -2, "__index");           /* ns.__index = ctor table */
+    lua_setfield(L, LUA_REGISTRYINDEX, "widgets");
 
     return L;
 }
@@ -510,5 +675,36 @@ int sim_bridge_run_face(lua_State * L, const char * entry_path, int aod)
         fprintf(stderr, "start error: %s\n", lua_tostring(L, -1));
         return -1;
     }
+    return 0;
+}
+
+/* Entry-point fallback: face.lua follows the {start=} module convention;
+ * a bare main.lua (the on-device entry, returns nothing) runs directly.
+ * The caller passes whichever file exists. */
+int sim_bridge_run_face_or_main(lua_State * L, const char * entry_path, int aod)
+{
+    g_aod_mode = aod ? 1 : 0;
+
+    lua_getglobal(L, "dofile");
+    lua_pushstring(L, entry_path);
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        fprintf(stderr, "load face error: %s\n", lua_tostring(L, -1));
+        return -1;
+    }
+    /* start() only when the entry returned a face module table */
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "start");
+        if (lua_isfunction(L, -1)) {
+            lua_pushinteger(L, aod);
+            if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+                fprintf(stderr, "start error: %s\n", lua_tostring(L, -1));
+                return -1;
+            }
+            return 0;
+        }
+        lua_pop(L, 1);
+    }
+    /* plain script entry (main.lua): its return value is discarded */
+    lua_pop(L, 1);
     return 0;
 }

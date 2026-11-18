@@ -77,6 +77,16 @@ CONTROLS = [
             {"key": "healthStepCount", "label": "步数", "min": 0, "max": 99999},
         ],
     },
+    {
+        "group": "传感器",
+        "fields": [
+            {"key": "compass.y", "label": "航向角", "min": 0, "max": 360, "sensor": True},
+            {"key": "compass.x", "label": "地磁X", "min": -200, "max": 200, "sensor": True},
+            {"key": "compass.z", "label": "地磁Z", "min": -200, "max": 200, "sensor": True},
+            {"key": "gps.lat", "label": "纬度", "min": -90, "max": 90, "float": True, "sensor": True},
+            {"key": "gps.lon", "label": "经度", "min": -180, "max": 180, "float": True, "sensor": True},
+        ],
+    },
 ]
 
 WEEK_NAMES = ["日", "一", "二", "三", "四", "五", "六"]
@@ -134,6 +144,10 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     await asyncio.to_thread(client.inject_nan, data["key"])
                 elif kind == "tick":
                     await asyncio.to_thread(client.tick, int(data["ms"]))
+                elif kind == "sensor":
+                    node, _, field = data["key"].partition(".")
+                    await asyncio.to_thread(
+                        client.inject_sensor, node, field, float(data["value"]))
                 elif kind == "refresh":
                     pass
                 else:

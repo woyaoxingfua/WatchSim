@@ -79,6 +79,17 @@ class SimClient:
             if not ack.startswith("OK"):
                 raise RuntimeError(ack)
 
+    def inject_sensor(self, node: str, field: str, value: float) -> None:
+        """Push one field into a virtual uorb sensor node ("compass"."y", ...).
+        The core also advances the clock past one poll period so the face's
+        own timer picks the value up before the next frame."""
+        with self._lock:
+            self._writeline(f"SENSOR {node} {field} {float(value)!r}")
+            ack = self._readline()
+            if not ack.startswith("OK"):
+                raise RuntimeError(ack)
+            self.state[f"sensor:{node}.{field}"] = float(value)
+
     def set_mode(self, aod: int) -> None:
         """Reload the face in the requested mode and replay the snapshot."""
         with self._lock:

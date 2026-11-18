@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#define access(p, m) _access(p, 0)
+#define F_OK 0
+#endif
 
 /* Make a path absolute against the cwd (device firmware injects absolute
  * SCRIPT_PATH; relative face dirs would break image src resolution). */
@@ -76,14 +82,25 @@ int main(int argc, char ** argv)
     }
     lua_setfield(L, loaded, "dataman");
 
+    /* loaded.uorb = dofile(mi_uorb.lua) — virtual /dev/uorb sensor nodes */
+    lua_getglobal(L, "dofile");
+    lua_pushfstring(L, "%s/mi_uorb.lua", WATCHSIM_LUA_DIR);
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        fprintf(stderr, "mi_uorb error: %s\n", lua_tostring(L, -1)); return 1;
+    }
+    lua_setfield(L, loaded, "uorb");
+
     /* global SCRIPT_PATH */
     lua_pushstring(L, script_path);
     lua_setglobal(L, "SCRIPT_PATH");
 
-    /* run face */
+    /* run face: face.lua ({start=} convention) or a bare main.lua entry */
     char entry[1100];
     snprintf(entry, sizeof(entry), "%s/face.lua", face_dir);
-    if (sim_bridge_run_face(L, entry, aod) != 0) return 1;
+    if (access(entry, F_OK) != 0) {
+        snprintf(entry, sizeof(entry), "%s/main.lua", face_dir);
+    }
+    if (sim_bridge_run_face_or_main(L, entry, aod) != 0) return 1;
 
     /* optional data injection before the final layout/render */
     if (inject_path) {
@@ -95,10 +112,12 @@ int main(int argc, char ** argv)
         }
     }
 
-    /* force layout so coords and image sizes are resolved before rendering */
+    /* force layout so coords and image sizes are resolved before rendering;
+     * advance past one period of a 1 s face timer so data injected above
+     * gets picked up by the face's own onTick before the frame is dumped */
     lv_obj_update_layout(lv_scr_act());
     sim_render_pump(10);
-    sim_tick(16);
+    sim_tick(1100);
     sim_render_pump(10);
 
     if (sim_dump_raw(out_raw) != 0) {

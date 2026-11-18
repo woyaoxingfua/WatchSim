@@ -9,6 +9,8 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#define access(p, m) _access(p, 0)
+#define F_OK 0
 #endif
 
 #define FRAME_BYTES (SIM_HOR_RES * SIM_VER_RES * (int)sizeof(sim_rgba_t))
@@ -53,12 +55,26 @@ static int load_face(int aod)
     }
     lua_setfield(L, loaded, "dataman");
 
+    /* loaded.uorb = dofile(mi_uorb.lua) — faces that read /dev/uorb/sensor_*
+     * nodes directly get virtual nodes instead of a failing io.open. */
+    lua_getglobal(L, "dofile");
+    lua_pushfstring(L, "%s/mi_uorb.lua", WATCHSIM_LUA_DIR);
+    if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+        fprintf(stderr, "mi_uorb error: %s\n", lua_tostring(L, -1)); return 1;
+    }
+    lua_setfield(L, loaded, "uorb");
+
     lua_pushstring(L, g_script_path);
     lua_setglobal(L, "SCRIPT_PATH");
 
+    /* face.lua follows the {start=} convention; faces whose on-device entry
+     * is main.lua (no wrapper committed) run that directly instead. */
     char entry[1200];
     snprintf(entry, sizeof(entry), "%s/face.lua", g_face_dir);
-    if (sim_bridge_run_face(L, entry, aod) != 0) return 1;
+    if (access(entry, F_OK) != 0) {
+        snprintf(entry, sizeof(entry), "%s/main.lua", g_face_dir);
+    }
+    if (sim_bridge_run_face_or_main(L, entry, aod) != 0) return 1;
 
     lv_obj_update_layout(lv_scr_act());
     sim_render_pump(10);
@@ -84,6 +100,31 @@ static int call_dataman2(const char * method, const char * key, int has_i, long 
         lua_pop(g_L, 1); return -1;
     }
     lua_pop(g_L, 1);
+    return 0;
+}
+
+/* Push one field into a virtual uorb sensor node (see lua/mi_uorb.lua). */
+static int call_uorb_inject(const char * node, const char * field, double val)
+{
+    lua_getglobal(g_L, "require");
+    lua_pushstring(g_L, "uorb");
+    if (lua_pcall(g_L, 1, 1, 0) != LUA_OK) {
+        fprintf(stderr, "require uorb: %s\n", lua_tostring(g_L, -1)); return -1;
+    }
+    lua_getfield(g_L, -1, "inject");
+    lua_pushstring(g_L, node);
+    lua_pushstring(g_L, field);
+    lua_pushnumber(g_L, (lua_Number)val);
+    if (lua_pcall(g_L, 3, 1, 0) != LUA_OK) {
+        fprintf(stderr, "uorb.inject: %s\n", lua_tostring(g_L, -1));
+        lua_pop(g_L, 1); return -1;
+    }
+    int found = lua_toboolean(g_L, -1);
+    lua_pop(g_L, 1);
+    if (!found) {
+        fprintf(stderr, "uorb node/field unknown: %s.%s\n", node, field);
+        return -1;
+    }
     return 0;
 }
 
@@ -167,6 +208,23 @@ int main(int argc, char ** argv)
         else if (!strcmp(cmd, "TICK") && n >= 2) {
             sim_tick((uint32_t)a);
             printf("OK tick %ld\n", a); fflush(stdout);
+        }
+        else if (!strcmp(cmd, "SENSOR")) {
+            /* SENSOR <node> <field> <float>: node is a short alias
+             * ("compass"/"gps") or full /dev/uorb path. Faces poll the
+             * node from their own timer, so advance past one poll period
+             * to make the value visible in the next frame. The outer
+             * sscanf can't parse this (field is a name, not a number),
+             * so re-scan the raw line here. */
+            char field[64];
+            double val = 0;
+            if (sscanf(line, "%31s %127s %63s %lf", cmd, key, field, &val) == 4
+                && call_uorb_inject(key, field, val) == 0) {
+                sim_tick(250);
+                printf("OK sensor %s.%s\n", key, field); fflush(stdout);
+            } else {
+                printf("ERR sensor\n"); fflush(stdout);
+            }
         }
         else if (!strcmp(cmd, "DOFILE") && n >= 2) {
             lua_getglobal(g_L, "dofile");

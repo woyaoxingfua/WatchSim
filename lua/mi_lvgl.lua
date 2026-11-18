@@ -19,6 +19,14 @@ end
 -- metatable also carries :Image{...} so both call styles work unchanged.
 lvgl.Image = simcore.image
 
+-- lvgl.Label(parent, props) — text properties: text, text_color ('#rrggbb'),
+-- text_font (from lvgl.Font), text_align, x/y/width. The device's vendor
+-- fonts map onto built-in montserrat sizes (see simcore.font).
+lvgl.Label = simcore.label
+
+-- lvgl.Font(name, size) — e.g. lvgl.Font("MiSans-Regular", 18).
+lvgl.Font = simcore.font
+
 -- lvgl.Timer({period=, cb=, paused=}) -> {pause=(), resume=()}
 lvgl.Timer = simcore.timer
 

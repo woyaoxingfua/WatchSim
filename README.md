@@ -14,6 +14,10 @@ headless 内存渲染，不依赖显示服务，能跑 C 和 Python 的机器（
   就是这么接进来的。
 - 注入数据按真机的 8.8 定点编码，可以给任意字段塞缺测哨兵（INT_MAX）、
   NaN、有符号值，专门用来测表盘的防御逻辑。
+- 有些表盘不走 dataman，直接 `io.open("/dev/uorb/sensor_compass0")` 读
+  原始传感器节点（指南针地磁、GPS）。这类节点在模拟器里是虚拟的：
+  `uorb.open` 返回桩句柄，`read("*a")` 吐最新一帧（小端二进制，帧格式
+  同固件），面板"传感器"组或 `SENSOR` 命令注入数据。
 - 真机的几个限制也照搬：AOD 不调度 Lua 动画、AOD 数据去重。
 - C 核心 `sim_server` 常驻，走 stdio 行协议；aiohttp 服务把帧编成 PNG
   从 WebSocket 推给浏览器。
@@ -105,6 +109,7 @@ python3 tests/run_all_tests.py
 | `INJECT <key> <raw>` | 注入原始定点值 |
 | `SENTINEL <key>` / `NAN <key>` | 注入缺测哨兵 / NaN |
 | `TICK <ms>` | 推进虚拟时钟并处理定时器 |
+| `SENSOR <node> <field> <float>` | 注入虚拟 uorb 传感器字段（如 `SENSOR compass y 45.0`），随后自动 tick 250ms 让表盘轮询到 |
 | `DOFILE <path>` | 执行一段 Lua（批量注入/脚本化） |
 | `FRAME` | 回 `FRAME <n>` 头 + 645120 字节 RGBA |
 | `QUIT` | 退出 |
@@ -115,7 +120,10 @@ python3 tests/run_all_tests.py
 推进、AOD 动画抑制与数据去重、8.8 定点与哨兵/有符号编码，这些和真机
 一致。有出入的地方：
 
-- 数据是手动注入的，`dataman` 是行为等价的桩，不是系统服务。
+- 数据是手动注入的，`dataman` 是行为等价的桩，不是系统服务；uorb
+  传感器节点同样是虚拟的，`read` 返回最新一帧而非真机的采样队列。
+- 文本控件 `lvgl.Label` 可用，但字体是内置 montserrat 按字号就近映射，
+  不是真机的 MiSans——字形外观有差异，排布与测量行为一致。
 - 帧按需渲染（`lv_timer_ready` 强制刷新），不等真机的 30ms 刷新周期；
   虚拟时钟只在 `TICK` 时推进，和真机不等速。
 - 触摸/设置页交互没在面板上暴露，需要的话用 `DOFILE` 脚本驱动。

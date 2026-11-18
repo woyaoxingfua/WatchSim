@@ -13,4 +13,8 @@ lua_State * sim_bridge_newstate(void);
 /* Load and run a watch face entry file; mode 0=normal, 1=AOD. */
 int sim_bridge_run_face(lua_State * L, const char * entry_path, int aod);
 
+/* Same, but tolerates a bare main.lua script entry: a returned table with a
+ * start() field runs as a face module, anything else runs as a plain script. */
+int sim_bridge_run_face_or_main(lua_State * L, const char * entry_path, int aod);
+
 #endif

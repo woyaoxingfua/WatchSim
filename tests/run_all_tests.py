@@ -147,13 +147,11 @@ finally:
         srv.kill()
 
 # 6. uorb sensor injection (compass face, optional) ------------------------
-# The compass face is not part of the repo (copyright); point
-# WATCHSIM_COMPASS_FACE at a local checkout to include this check.
-COMPASS = os.environ.get(
-    "WATCHSIM_COMPASS_FACE",
-    "/mnt/c/Users/Lenovo/WorkBuddy/2026-09-01-13-44-07/compass_9pro_10p/app/lua")
-if not os.path.isdir(COMPASS):
-    print("[SKIP] uorb 传感器 -> compass 表盘目录不存在")
+# The compass face is not part of the repo (copyright); set
+# WATCHSIM_COMPASS_FACE to a local checkout to include this check.
+COMPASS = os.environ.get("WATCHSIM_COMPASS_FACE", "")
+if not (COMPASS and os.path.isdir(COMPASS)):
+    print("[SKIP] uorb 传感器 -> 未设置 WATCHSIM_COMPASS_FACE，跳过")
 else:
     proc = subprocess.Popen(
         [binpath("sim_server"), COMPASS, COMPASS + "/", "0"],

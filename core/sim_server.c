@@ -158,6 +158,10 @@ static void emit_frame(void)
 int main(int argc, char ** argv)
 {
     setvbuf(stderr, NULL, _IONBF, 0);
+    /* Pipes make stdout fully buffered; Lua print() from face code would
+     * linger in the buffer between protocol replies. Line-buffered keeps
+     * face debug output visible without extra flushes in the protocol. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
 #ifdef _WIN32
     /* Binary frames go through stdout; text mode would corrupt them. */
     _setmode(_fileno(stdout), _O_BINARY);
@@ -180,6 +184,12 @@ int main(int argc, char ** argv)
         long a = 0, b = 0;
         int n = sscanf(line, "%31s %127s %ld %ld", cmd, key, &a, &b);
         if (n < 1) continue;
+        /* TICK takes a bare numeric arg; the shared sscanf puts it in
+         * `key`, so re-scan for the number. */
+        long tick_ms = 0;
+        if (!strcmp(cmd, "TICK")) {
+            sscanf(line, "%31s %ld", cmd, &tick_ms);
+        }
 
         if (!strcmp(cmd, "QUIT")) {
             printf("BYE\n"); fflush(stdout);
@@ -205,9 +215,9 @@ int main(int argc, char ** argv)
             call_dataman2("inject_nan", key, 0, 0);
             printf("OK nan %s\n", key); fflush(stdout);
         }
-        else if (!strcmp(cmd, "TICK") && n >= 2) {
-            sim_tick((uint32_t)a);
-            printf("OK tick %ld\n", a); fflush(stdout);
+        else if (!strcmp(cmd, "TICK")) {
+            sim_tick((uint32_t)tick_ms);
+            printf("OK tick %ld\n", tick_ms); fflush(stdout);
         }
         else if (!strcmp(cmd, "SENSOR")) {
             /* SENSOR <node> <field> <float>: node is a short alias

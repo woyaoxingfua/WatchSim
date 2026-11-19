@@ -39,6 +39,8 @@ typedef struct {
     lua_State * L;
     int target_ref;     /* registry ref to target object userdata */
     int exec_ref;       /* registry ref to exec_cb */
+    int done_ref;       /* registry ref to done_cb (ready handler) */
+    int done_sent;      /* fire done_cb once per run */
 } sim_anim_t;
 
 static lua_State * g_L = NULL;
@@ -123,10 +125,22 @@ static void apply_props(lua_State * L, sim_obj_t * so, int tab)
             lv_obj_set_width(o, prop_int(L, -1));
         } else if (!strcmp(key, "h")) {
             lv_obj_set_height(o, prop_int(L, -1));
-        } else if (!strcmp(key, "bg_color")) {
-            lv_obj_set_style_bg_color(o, lv_color_hex((uint32_t)luaL_checknumber(L, -1)), 0);
-        } else if (!strcmp(key, "bg_opa")) {
-            lv_obj_set_style_bg_opa(o, (lv_opa_t)prop_int(L, -1), 0);
+        } else if (!strcmp(key, "bg_color") || !strcmp(key, "color")) {
+            /* "color" (with "opa"): Mi-style image tint on Image objects,
+             * plain bg colour otherwise. */
+            if (!strcmp(key, "color") && lv_obj_check_type(o, &lv_img_class)) {
+                lv_obj_set_style_img_recolor(o, lv_color_hex(prop_color(L, -1)), 0);
+                lv_obj_set_style_img_recolor_opa(o, LV_OPA_COVER, 0);
+            } else {
+                lv_obj_set_style_bg_color(o, lv_color_hex(prop_color(L, -1)), 0);
+            }
+        } else if (!strcmp(key, "bg_opa") || !strcmp(key, "opa")) {
+            if (!strcmp(key, "opa") && lv_obj_check_type(o, &lv_img_class)) {
+                /* OPA(100)=255 style overall opacity on images */
+                lv_obj_set_style_img_opa(o, (lv_opa_t)prop_int(L, -1), 0);
+            } else {
+                lv_obj_set_style_bg_opa(o, (lv_opa_t)prop_int(L, -1), 0);
+            }
         } else if (!strcmp(key, "border_width")) {
             lv_obj_set_style_border_width(o, prop_int(L, -1), 0);
         } else if (!strcmp(key, "pad_all")) {
@@ -151,6 +165,17 @@ static void apply_props(lua_State * L, sim_obj_t * so, int tab)
             }
         } else if (!strcmp(key, "angle")) {
             lv_img_set_angle(o, (int16_t)prop_int(L, -1));
+        } else if (!strcmp(key, "zoom") || !strcmp(key, "transform_zoom")
+                   || !strcmp(key, "transform_scale_x") || !strcmp(key, "transform_scale_y")) {
+            /* device zoom is percent (100 = 1x); LVGL transform units are
+             * 256 = 1x. LVGL 8.3 has a single transform_zoom (no separate
+             * x/y scale), so all four spellings land on it. */
+            int32_t z = (int32_t)(luaL_checknumber(L, -1) * 2.56 + 0.5);
+            lv_obj_set_style_transform_zoom(o, (lv_coord_t)z, 0);
+        } else if (!strcmp(key, "transform_pivot_x") || !strcmp(key, "pivot_x")) {
+            lv_obj_set_style_transform_pivot_x(o, (lv_coord_t)prop_int(L, -1), 0);
+        } else if (!strcmp(key, "transform_pivot_y") || !strcmp(key, "pivot_y")) {
+            lv_obj_set_style_transform_pivot_y(o, (lv_coord_t)prop_int(L, -1), 0);
         } else if (!strcmp(key, "align")) {
             lv_obj_set_align(o, (lv_align_t)prop_int(L, -1));
         } else if (!strcmp(key, "pivot")) {
@@ -352,6 +377,63 @@ static int m_delete(lua_State * L)
 }
 
 /* ------------------------------------------------------------------ */
+/* Hierarchy / layering                                                */
+/* ------------------------------------------------------------------ */
+/* Wrap a raw lv_obj_t* (not created here) so get_parent can return a
+ * userdata with the shared metatable. */
+static void push_obj_wrapper(lua_State * L, lv_obj_t * obj);
+
+static int m_set_parent(lua_State * L)
+{
+    sim_obj_t * so = check_obj(L, 1);
+    sim_obj_t * p = check_obj(L, 2);
+    lv_obj_set_parent(so->obj, p->obj);
+    return 0;
+}
+
+static int m_get_parent(lua_State * L)
+{
+    sim_obj_t * so = check_obj(L, 1);
+    lv_obj_t * parent = lv_obj_get_parent(so->obj);
+    if (!parent) return 0;
+    push_obj_wrapper(L, parent);
+    return 1;
+}
+
+static int m_get_child_cnt(lua_State * L)
+{
+    sim_obj_t * so = check_obj(L, 1);
+    lua_pushinteger(L, (lua_Integer)lv_obj_get_child_cnt(so->obj));
+    return 1;
+}
+
+static int m_move_to_index(lua_State * L)
+{
+    sim_obj_t * so = check_obj(L, 1);
+    lv_obj_move_to_index(so->obj, (int)luaL_checkinteger(L, 2));
+    return 0;
+}
+
+static int m_move_foreground(lua_State * L)
+{
+    sim_obj_t * so = check_obj(L, 1);
+    lv_obj_move_foreground(so->obj);
+    return 0;
+}
+
+static void push_obj_wrapper(lua_State * L, lv_obj_t * obj)
+{
+    sim_obj_t * so = (sim_obj_t *)lua_newuserdata(L, sizeof(sim_obj_t));
+    so->obj = obj;
+    so->event_fn_ref = LUA_NOREF;
+    so->is_pointer = 0;
+    so->range.angle_start = 0; so->range.angle_range = 3600;
+    so->range.value_start = 0; so->range.value_range = 360;
+    luaL_getmetatable(L, OBJ_MT);
+    lua_setmetatable(L, -2);
+}
+
+/* ------------------------------------------------------------------ */
 /* Animation                                                           */
 /* ------------------------------------------------------------------ */
 static void anim_exec_trampoline(void * var, int32_t v)
@@ -367,6 +449,20 @@ static void anim_exec_trampoline(void * var, int32_t v)
     }
 }
 
+/* lv_anim ready callback: the animation finished (or was stopped after
+ * finishing); fire the Lua done_cb once. */
+static void anim_done_trampoline(lv_anim_t * a)
+{
+    sim_anim_t * sa = (sim_anim_t *)a->var;
+    if (!sa || sa->done_ref == LUA_NOREF || sa->done_sent) return;
+    sa->done_sent = 1;
+    lua_rawgeti(sa->L, LUA_REGISTRYINDEX, sa->done_ref);
+    if (lua_pcall(sa->L, 0, 0, 0) != LUA_OK) {
+        fprintf(stderr, "anim done error: %s\n", lua_tostring(sa->L, -1));
+        lua_pop(sa->L, 1);
+    }
+}
+
 static sim_anim_t * check_anim(lua_State * L, int idx)
 {
     return (sim_anim_t *)luaL_checkudata(L, idx, ANIM_MT);
@@ -375,6 +471,7 @@ static sim_anim_t * check_anim(lua_State * L, int idx)
 static void anim_apply(lua_State * L, sim_anim_t * sa, int tab, sim_obj_t * target)
 {
     int run = 0;
+    int early_apply = 0;
     lua_pushnil(L);
     while (lua_next(L, tab) != 0) {
         const char * key = luaL_checkstring(L, -2);
@@ -389,20 +486,33 @@ static void anim_apply(lua_State * L, sim_anim_t * sa, int tab, sim_obj_t * targ
         } else if (!strcmp(key, "repeat_count")) {
             lv_anim_set_repeat_count(&sa->anim, (uint16_t)prop_int(L, -1));
         } else if (!strcmp(key, "path")) {
-            lv_anim_set_path_cb(&sa->anim, lv_anim_path_linear);
+            /* faces name curves: "ease_out" and friends; default linear. */
+            lv_anim_set_path_cb(&sa->anim, lv_anim_path_ease_out);
+        } else if (!strcmp(key, "early_apply")) {
+            early_apply = lua_toboolean(L, -1);
         } else if (!strcmp(key, "exec_cb")) {
             luaL_checktype(L, -1, LUA_TFUNCTION);
             if (sa->exec_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, sa->exec_ref);
             lua_pushvalue(L, -1);
             sa->exec_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        } else if (!strcmp(key, "done_cb")) {
+            luaL_checktype(L, -1, LUA_TFUNCTION);
+            if (sa->done_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, sa->done_ref);
+            lua_pushvalue(L, -1);
+            sa->done_ref = luaL_ref(L, LUA_REGISTRYINDEX);
         } else if (!strcmp(key, "run")) {
             run = lua_toboolean(L, -1);
         }
         lua_pop(L, 1);
     }
     (void)target;
+    lv_anim_set_ready_cb(&sa->anim, anim_done_trampoline);
+    if (early_apply) lv_anim_set_exec_cb(&sa->anim, anim_exec_trampoline);
     /* Real hardware never runs Lua animations in AOD; mirror that limit. */
-    if (run && !g_aod_mode) lv_anim_start(&sa->anim);
+    if (run && !g_aod_mode) {
+        sa->done_sent = 0;
+        lv_anim_start(&sa->anim);
+    }
 }
 
 /* obj:Anim(props) */
@@ -415,6 +525,8 @@ static int m_anim(lua_State * L)
     memset(sa, 0, sizeof(*sa));
     sa->L = L;
     sa->exec_ref = LUA_NOREF;
+    sa->done_ref = LUA_NOREF;
+    sa->done_sent = 0;
     lv_anim_init(&sa->anim);
     lv_anim_set_var(&sa->anim, sa);
     lv_anim_set_exec_cb(&sa->anim, anim_exec_trampoline);
@@ -438,6 +550,23 @@ static int anim_m_set(lua_State * L)
     anim_apply(L, sa, 2, NULL);
     lua_settop(L, 1);
     return 1;
+}
+
+/* anim:stop() — finish immediately and fire the done callback, matching the
+ * on-device semantic where stopping a finished animation is a no-op. */
+static int anim_m_stop(lua_State * L)
+{
+    sim_anim_t * sa = check_anim(L, 1);
+    lv_anim_del(sa, anim_exec_trampoline);   /* drops the running anim */
+    if (sa->done_ref != LUA_NOREF && !sa->done_sent) {
+        sa->done_sent = 1;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, sa->done_ref);
+        if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+            fprintf(stderr, "anim done error: %s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -526,11 +655,17 @@ static const luaL_Reg obj_methods[] = {
     {"Image", l_image},
     {"Pointer", l_pointer},
     {"Label", l_label},
+    {"set_parent", m_set_parent},
+    {"get_parent", m_get_parent},
+    {"get_child_cnt", m_get_child_cnt},
+    {"move_to_index", m_move_to_index},
+    {"move_foreground", m_move_foreground},
     {NULL, NULL},
 };
 
 static const luaL_Reg anim_methods[] = {
     {"set", anim_m_set},
+    {"stop", anim_m_stop},
     {NULL, NULL},
 };
 
@@ -558,6 +693,39 @@ static int l_tick_get(lua_State * L)
     return 1;
 }
 
+/* simcore.obj_move_to_index(obj, idx) / obj_move_foreground(obj):
+ * module-level spellings some faces try before the method form. */
+static int l_obj_move_to_index(lua_State * L)
+{
+    return m_move_to_index(L);
+}
+
+static int l_obj_move_foreground(lua_State * L)
+{
+    return m_move_foreground(L);
+}
+
+/* Module-level Anim(obj, props) — same as obj:Anim(props). */
+static int l_anim(lua_State * L)
+{
+    return m_anim(L);
+}
+
+/* simcore.indev.get_act(): the headless sim has no input device, so there
+ * is never an active indev — faces guard with pcall/nil checks, exactly
+ * the "no finger on screen" state. */
+static int l_indev_get_act(lua_State * L)
+{
+    (void)L;
+    lua_pushnil(L);
+    return 1;
+}
+
+static const luaL_Reg indev_funcs[] = {
+    {"get_act", l_indev_get_act},
+    {NULL, NULL},
+};
+
 static const luaL_Reg simcore_funcs[] = {
     {"object", l_object},
     {"image", l_image},
@@ -565,6 +733,9 @@ static const luaL_Reg simcore_funcs[] = {
     {"label", l_label},
     {"font", l_font},
     {"timer", l_timer},
+    {"Anim", l_anim},
+    {"obj_move_to_index", l_obj_move_to_index},
+    {"obj_move_foreground", l_obj_move_foreground},
     {"set_mode", l_set_mode},
     {"is_aod", l_is_aod},
     {"tick_get", l_tick_get},
@@ -575,14 +746,23 @@ static void add_constants(lua_State * L)
 {
     /* FLAG: expose real LVGL flag values so the Lua layer never hardcodes them. */
     lua_newtable(L);
-    lua_pushinteger(L, LV_OBJ_FLAG_HIDDEN);       lua_setfield(L, -2, "HIDDEN");
-    lua_pushinteger(L, LV_OBJ_FLAG_SCROLLABLE);   lua_setfield(L, -2, "SCROLLABLE");
-    lua_pushinteger(L, LV_OBJ_FLAG_CLICKABLE);    lua_setfield(L, -2, "CLICKABLE");
-    lua_pushinteger(L, LV_OBJ_FLAG_EVENT_BUBBLE); lua_setfield(L, -2, "EVENT_BUBBLE");
+    lua_pushinteger(L, LV_OBJ_FLAG_HIDDEN);          lua_setfield(L, -2, "HIDDEN");
+    lua_pushinteger(L, LV_OBJ_FLAG_SCROLLABLE);      lua_setfield(L, -2, "SCROLLABLE");
+    lua_pushinteger(L, LV_OBJ_FLAG_CLICKABLE);       lua_setfield(L, -2, "CLICKABLE");
+    lua_pushinteger(L, LV_OBJ_FLAG_EVENT_BUBBLE);    lua_setfield(L, -2, "EVENT_BUBBLE");
+    lua_pushinteger(L, LV_OBJ_FLAG_GESTURE_BUBBLE);  lua_setfield(L, -2, "GESTURE_BUBBLE");
+    lua_pushinteger(L, LV_OBJ_FLAG_FLOATING);        lua_setfield(L, -2, "FLOATING");
+    lua_pushinteger(L, LV_OBJ_FLAG_SCROLL_ELASTIC);  lua_setfield(L, -2, "SCROLL_ELASTIC");
+    lua_pushinteger(L, LV_OBJ_FLAG_SCROLL_MOMENTUM); lua_setfield(L, -2, "SCROLL_MOMENTUM");
     lua_setfield(L, -2, "FLAG");
 
     lua_newtable(L);
-    lua_pushinteger(L, LV_EVENT_SHORT_CLICKED);   lua_setfield(L, -2, "SHORT_CLICKED");
+    lua_pushinteger(L, LV_EVENT_SHORT_CLICKED); lua_setfield(L, -2, "SHORT_CLICKED");
+    lua_pushinteger(L, LV_EVENT_CLICKED);       lua_setfield(L, -2, "CLICKED");
+    lua_pushinteger(L, LV_EVENT_PRESSED);       lua_setfield(L, -2, "PRESSED");
+    lua_pushinteger(L, LV_EVENT_PRESSING);      lua_setfield(L, -2, "PRESSING");
+    lua_pushinteger(L, LV_EVENT_RELEASED);      lua_setfield(L, -2, "RELEASED");
+    lua_pushinteger(L, LV_EVENT_ALL);           lua_setfield(L, -2, "ALL");
     lua_setfield(L, -2, "EVENT");
 
     /* ALIGN: real lv_align_t values, so obj:set{align=lvgl.ALIGN.CENTER} etc. */
@@ -641,6 +821,10 @@ lua_State * sim_bridge_newstate(void)
     lua_setfield(L, -2, "HOR_RES");
     lua_pushinteger(L, SIM_VER_RES);
     lua_setfield(L, -2, "VER_RES");
+    /* simcore.indev.get_act() -> nil (headless: no finger on screen) */
+    lua_newtable(L);
+    luaL_setfuncs(L, indev_funcs, 0);
+    lua_setfield(L, -2, "indev");
     lua_setglobal(L, "simcore");
 
     /* widgets namespace in the registry. Faces fetch it through

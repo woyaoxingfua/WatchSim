@@ -53,6 +53,16 @@ function dataman.inject_sentinel(key)
     dataman.inject(key, dataman.SENTINEL)
 end
 
+-- dataman.updateTime(): on the device this is the runtime asking dataman to
+-- refresh its clock topics; in the sim, publish the current wall clock as a
+-- normal time snapshot.
+function dataman.updateTime()
+    local t = os.date("*t")
+    dataman.inject_int("timeHour", t.hour)
+    dataman.inject_int("timeMinute", t.min)
+    dataman.inject_int("timeSecond", t.sec)
+end
+
 -- Inject a NaN (face.lua tests with v ~= v).
 function dataman.inject_nan(key)
     for _, s in ipairs(subs) do
